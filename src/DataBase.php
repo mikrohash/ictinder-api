@@ -14,7 +14,10 @@ class Database {
         $this->mysqli = connect_to_db();
     }
 
+    // ***** OPERATIONS *****
+
     private function query($query) {
+        echo $query."<br/>";
         return $this->mysqli->query($query);
     }
 
@@ -28,6 +31,8 @@ class Database {
         }
     }
 
+    // ***** ACCOUNTS *****
+
     public function create_account($discord_id, $password) {
         $pw_bcrypt = password_hash($password, PASSWORD_BCRYPT);
         $this->query("INSERT INTO account (discord_id, pw_bcrypt) VALUES ('$discord_id', '$pw_bcrypt')");
@@ -36,5 +41,38 @@ class Database {
     public function authenticate_account($discord_id, $password) {
         $account = $this->get_row("SELECT pw_bcrypt FROM account WHERE discord_id = '$discord_id'");
         return $account !== null && password_verify($password, $account['pw_bcrypt']);
+    }
+
+    public function delete_account($id) {
+        $this->query("DELETE FROM account WHERE id = '$id'");
+    }
+
+    // ***** NODES *****
+
+    public function create_node($account, $address) {
+        $this->query("INSERT INTO node (account, address) VALUES ('$account', '$address')");
+    }
+
+    public function delete_node($id) {
+        $this->query("DELETE FROM node WHERE id = '$id'");
+    }
+
+    // ***** PEERING *****
+
+    public function create_peering($node_a, $node_b) {
+        $node1 = min($node_a, $node_b);
+        $node2 = max($node_a, $node_b);
+        $this->query("INSERT INTO peering (node1, node2) VALUES ('$node1', '$node2')");
+    }
+
+    public function find_peering($node_a, $node_b) {
+        $node1 = min($node_a, $node_b);
+        $node2 = max($node_a, $node_b);
+        $row = $this->get_row("SELECT id FROM peering where $node1 = '$node1' && $node2 = '$node2'");
+        return $row !== null ? $row['id'] : -1;
+    }
+
+    public function delete_peering($id) {
+        $this->query("DELETE FROM peering WHERE id = '$id'");
     }
 }
