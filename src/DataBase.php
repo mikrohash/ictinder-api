@@ -72,7 +72,14 @@ class Database {
         return $row !== null ? $row['id'] : -1;
     }
 
-    public function delete_peering($id) {
-        $this->query("DELETE FROM peering WHERE id = '$id'");
+    public function delete_peering($node_complaining, $node_issue) {
+        // When adding an unpeering row, a SQL trigger will automatically delete the corresponding peering row from the database.
+        $this->query("INSERT INTO unpeering (node_complaining, node_issue) VALUES ('$node_complaining', '$node_issue')");
+    }
+
+    // ***** STATS *****
+
+    public function create_stats($by_node, $of_node, $stats) {
+        $this->query("INSERT INTO stats (of_node, by_node, txs_all) VALUES ('$of_node', '$by_node', '$stats[all]')");
     }
 }
