@@ -1,6 +1,4 @@
-<?php
-
-function incl_rel_once($rel) { include_once(dirname(__FILE__).DIRECTORY_SEPARATOR.$rel); }
+<?php if(!function_exists("incl_rel_once")) include_once "include.php";
 
 class Database {
 
@@ -10,14 +8,13 @@ class Database {
      * @throws Exception
      */
     public function __construct() {
-        incl_rel_once("mysql.php");
+        incl_rel_once("mysql.php", __FILE__);
         $this->mysqli = connect_to_db();
     }
 
     // ***** OPERATIONS *****
 
     private function query($query) {
-        echo $query."<br/>";
         return $this->mysqli->query($query);
     }
 
@@ -29,6 +26,19 @@ class Database {
         } finally {
             $res->close();
         }
+    }
+
+    private function get_rows($query) {
+        $rows = array();
+        try {
+            $res = $this->query($query);
+            while($row = $res->fetch_object()) {
+                array_push($rows, get_object_vars($row));
+            }
+        } finally {
+            $res->close();
+        }
+        return $rows;
     }
 
     // ***** ACCOUNTS *****
@@ -57,6 +67,11 @@ class Database {
         $this->query("DELETE FROM node WHERE id = '$id'");
     }
 
+    public function find_node_by_address($address) {
+        $node = $this->get_row("SELECT id FROM node WHERE address = '$address'");
+        return $node ? $node['id'] : -1;
+    }
+
     // ***** PEERING *****
 
     public function create_peering($node_a, $node_b) {
@@ -75,6 +90,15 @@ class Database {
     public function delete_peering($node_complaining, $node_issue) {
         // When adding an unpeering row, a SQL trigger will automatically delete the corresponding peering row from the database.
         $this->query("INSERT INTO unpeering (node_complaining, node_issue) VALUES ('$node_complaining', '$node_issue')");
+    }
+
+    public function get_peer_addresses($node) {
+        $peering_rows = $this->get_rows("SELECT address FROM peering LEFT JOIN node ON node.id = node1+node2-'$node' WHERE node1 = '$node' || node2 = '$node'");
+        $peer_addresses = array();
+        foreach($peering_rows as $peering_row) {
+            array_push($peer_addresses, $peering_row['address']);
+        }
+        return $peer_addresses;
     }
 
     // ***** STATS *****
