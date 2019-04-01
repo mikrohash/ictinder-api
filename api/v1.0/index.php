@@ -1,32 +1,28 @@
 <?php if(!function_exists("incl_rel_once")) include_once "../../src/include.php";
 
-header('Content-Type: application/json');
-
 incl_rel_once("../../src/DataBase.php", __FILE__);
 
-echo process_request();
+try {
+    $db = new Database();
+    $res = process_request();
+} catch(Exception $exception) {
+    $res = error($exception->getMessage());
+}
+
+header('Content-Type: application/json');
+echo $res;
 
 // ***** PROCESSES *****
-
-function process_request() {
-    try {
-        return try_to_process_request();
-    } catch(Exception $exception) {
-        return error($exception->getMessage());
-    }
-}
 
 /**
  * @throws Exception If anything goes wrong
  */
-function try_to_process_request() {
+function process_request() {
     global $db;
-    if(!isset($db))
-        $db = new Database();
 
     $_POST['discord_id'] = "092348283430234";
     $_POST['password'] = "test";
-    $_POST['address'] = "ict-example.org:1337";
+    $_POST['address'] = "ict-example.org:1340";
 
     $node = determine_node();
 
@@ -38,17 +34,32 @@ function try_to_process_request() {
 // ***** OPERATIONS *****
 
 /**
- * @throws Exception If account authentication fails.
+ * @throws Exception If account authentication fails or node cannot be registered.
  */
 function determine_node() {
     global $db;
     $account = determine_account();
     $address = get_POST("address", '/^[a-zA-Z0-9.\-:]*:\d{1,5}$/');
     $node = $db->find_node_by_address($address);
-    if($node == -1) {
-        throw new Exception("Node does not exist.");
-        // TODO
-    }
+    if($node == -1)
+        $node = register_node($account, $address);
+    return $node;
+}
+
+
+/**
+ * @throws Exception If node cannot be registered.
+ */
+function register_node($account, $address) {
+    global $db;
+    if($db->count_free_slots($account) <= 0)
+        throw new Exception("You cannot register more nodes. Please delete others first.");
+    $db->create_node($account, $address);
+    $node = $db->find_node_by_address($address);
+    if($node == -1)
+        throw new Exception("Unexpected exception: could not create node.");
+    $db->peering_insert_middleman($node);
+    $db->make_peers($node);
     return $node;
 }
 
