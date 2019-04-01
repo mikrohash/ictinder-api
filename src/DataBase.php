@@ -5,7 +5,7 @@ class Database {
     private $mysqli;
 
     /**
-     * @throws Exception
+     * @throws Exception If connection to database fails.
      */
     public function __construct() {
         incl_rel_once("mysql.php", __FILE__);
@@ -49,8 +49,8 @@ class Database {
     }
 
     public function authenticate_account($discord_id, $password) {
-        $account = $this->get_row("SELECT pw_bcrypt FROM account WHERE discord_id = '$discord_id'");
-        return $account !== null && password_verify($password, $account['pw_bcrypt']);
+        $account = $this->get_row("SELECT id, pw_bcrypt FROM account WHERE discord_id = '$discord_id'");
+        return $account !== null && password_verify($password, $account['pw_bcrypt']) ? $account['id'] : -1;
     }
 
     public function delete_account($id) {
