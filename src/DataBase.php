@@ -44,6 +44,15 @@ class Database {
         return $rows;
     }
 
+    private function get_attribute_from_rows($query, $attribute) {
+        $rows = $this->get_rows($query);
+        $values = array();
+        foreach($rows as $row) {
+            array_push($values, $row[$attribute]);
+        }
+        return $values;
+    }
+
     private function num_rows($query) {
         try {
             $res = $this->query($query);
@@ -85,7 +94,7 @@ class Database {
     }
 
     public function count_free_slots($account) {
-        return $this->get_row("SELECT (slots-used) AS free FROM account JOIN (SELECT COUNT(id) AS used FROM node WHERE account = '$account') N WHERE id = '$account'")['free'];
+        return $this->get_row("SELECT free FROM slots_free WHERE account = '$account'")['free'];
 
     }
 
@@ -113,23 +122,35 @@ class Database {
         $this->query("INSERT INTO unpeering (node_complaining, node_issue) VALUES ('$node_complaining', '$node_issue')");
     }
 
-    public function get_peers($node) {
-        $peering_rows = $this->get_rows("SELECT node.id FROM peering LEFT JOIN node ON node.id = node1+node2-'$node' WHERE node1 = '$node' || node2 = '$node'");
-        $peers = array();
-        foreach($peering_rows as $peering_row) {
-            array_push($peers, $peering_row['id']);
-        }
-        return $peers;
+    public function get_peer_addresses($node) {
+        return $this->get_attribute_from_rows("SELECT node.address FROM peering LEFT JOIN node ON node.id = node1+node2-'$node' WHERE node1 = '$node' || node2 = '$node'", "address");
     }
 
+    public function get_peers($node) {
+        return $this->get_attribute_from_rows("PEERS('$node')", "id");
+    }
 
-    public function get_peer_addresses($node) {
-        $peering_rows = $this->get_rows("SELECT address FROM peering LEFT JOIN node ON node.id = node1+node2-'$node' WHERE node1 = '$node' || node2 = '$node'");
-        $peer_addresses = array();
-        foreach($peering_rows as $peering_row) {
-            array_push($peer_addresses, $peering_row['address']);
-        }
-        return $peer_addresses;
+    public function get_unpeered($node) {
+        return $this->get_attribute_from_rows("UNPEERS('$node')", "id");
+    }
+
+    public function find_new_peers($node) {
+        $current_peers = $this->get_peers($node);
+        $peers_needed = 3-sizeof($current_peers);
+        $not_interested = $current_peers;
+        array_push($not_interested, $this->get_unpeered($node));
+        array_push($not_interested, $node);
+        return $this->get_rows("SELECT * FROM node "
+            ."LEFT JOIN total_nbs ON node.id = total_nbs.node "
+            ."WHERE total_nbs.total_nbs < 3 && id NOT IN(".join(",", $not_interested).") "
+            ."AND IS_NODE_ACTIVE(node.id) AND timeout < CURRENT_TIMESTAMP() "
+            ."ORDER BY RAND() LIMIT $peers_needed");
+    }
+
+    function make_peers($node) {
+        $new_peers = $this->find_new_peers($node);
+        foreach($new_peers AS $new_peer)
+            $this->create_peering($node, $new_peer['id']);
     }
 
     function peering_insert_middleman($node) {
@@ -138,20 +159,6 @@ class Database {
             $this->create_peering($old['node1'], $node);
             $this->create_peering($old['node2'], $node);
         }
-    }
-
-    public function find_new_peers($node) {
-        $current_peers = $this->get_peers($node);
-        $peers_needed = 3-sizeof($current_peers);
-        $not_interested = $current_peers;
-        array_push($not_interested, $node);
-        return $this->get_rows("SELECT * FROM node LEFT JOIN total_nbs ON node.id = total_nbs.node WHERE total_nbs.total_nbs < 3 && id NOT IN(".join(",", $not_interested).") ORDER BY RAND() LIMIT $peers_needed");
-    }
-
-    function make_peers($node) {
-        $new_peers = $this->find_new_peers($node);
-        foreach($new_peers AS $new_peer)
-            $this->create_peering($node, $new_peer['id']);
     }
 
     // ***** STATS *****
