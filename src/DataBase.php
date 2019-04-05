@@ -1,8 +1,9 @@
 <?php if(!function_exists("incl_rel_once")) include_once "include.php";
 
-class Database {
+class GeneralDataBase {
 
-    private $mysqli;
+    protected $mysqli;
+    protected $last_query = "UNDEFINED";
 
     /**
      * @throws Exception If connection to database fails.
@@ -14,14 +15,19 @@ class Database {
 
     // ***** OPERATIONS *****
 
-    private function query($query) {
+    protected function query($query) {
         $res = $this->mysqli->query($query);
-        if(!$res)
-            die("<h1>MySQL Exception:</h1><br/><code>$query</code><br/><br/>" . $this->mysqli->error);
+        if(!$res) {
+            $query_escaped = $this->mysqli->escape_string($query);
+            $error = $this->mysqli->escape_string($this->mysqli->error);
+            $this->mysqli->query("INSERT INTO error (query, error) VALUES ('$query_escaped', '$error')");
+            die("<h1>MySQL Exception:</h1><br/><code>$query</code><br/><br/>" . $error ."<br/><hr/><br/>Last Query:<br/><br/><code>$this->last_query</code>");
+        }
+        $this->last_query = $query;
         return $res;
     }
 
-    private function get_row($query) {
+    protected function get_row($query) {
         try {
             $res = $this->query($query);
             $row = $res->fetch_object();
@@ -31,7 +37,7 @@ class Database {
         }
     }
 
-    private function get_rows($query) {
+    protected function get_rows($query) {
         $rows = array();
         try {
             $res = $this->query($query);
@@ -39,12 +45,15 @@ class Database {
                 array_push($rows, get_object_vars($row));
             }
         } finally {
+            while(mysqli_more_results($this->mysqli)) {
+                mysqli_next_result($this->mysqli);
+            }
             $res->close();
         }
         return $rows;
     }
 
-    private function get_attribute_from_rows($query, $attribute) {
+    protected function get_attribute_from_rows($query, $attribute) {
         $rows = $this->get_rows($query);
         $values = array();
         foreach($rows as $row) {
@@ -53,13 +62,26 @@ class Database {
         return $values;
     }
 
-    private function num_rows($query) {
+    protected function num_rows($query) {
         try {
             $res = $this->query($query);
             return $res->num_rows;
         } finally {
             $res->close();
         }
+    }
+
+    protected function delete_table($table) {
+        $this->query("DELETE FROM $table");
+    }
+}
+
+class DataBase extends GeneralDataBase{
+
+    // ***** GENERAL *****
+
+    public function create_api_call($node) {
+        $this->query("INSERT INTO api_call(node) VALUES ('$node')");
     }
 
     // ***** ACCOUNTS *****
@@ -127,18 +149,19 @@ class Database {
     }
 
     public function get_peers($node) {
-        return $this->get_attribute_from_rows("PEERS('$node')", "id");
+        return $this->get_attribute_from_rows("CALL PEERS($node)", "id");
     }
 
     public function get_unpeered($node) {
-        return $this->get_attribute_from_rows("UNPEERS('$node')", "id");
+        return $this->get_attribute_from_rows("CALL UNPEERS($node)", "id");
     }
 
     public function find_new_peers($node) {
         $current_peers = $this->get_peers($node);
+        $unpeered = $this->get_unpeered($node);
         $peers_needed = 3-sizeof($current_peers);
         $not_interested = $current_peers;
-        array_push($not_interested, $this->get_unpeered($node));
+        $not_interested = array_merge($not_interested, $unpeered);
         array_push($not_interested, $node);
         return $this->get_rows("SELECT * FROM node "
             ."LEFT JOIN total_nbs ON node.id = total_nbs.node "

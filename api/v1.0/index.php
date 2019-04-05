@@ -3,7 +3,7 @@
 incl_rel_once("../../src/DataBase.php", __FILE__);
 
 try {
-    $db = new Database();
+    $db = new DataBase();
     $res = process_request();
 } catch(Exception $exception) {
     $res = error($exception->getMessage());
@@ -23,12 +23,27 @@ function process_request() {
     $_POST['discord_id'] = "092348283430234";
     $_POST['password'] = "test";
     $_POST['address'] = "ict-example.org:1340";
+    $_POST['stats'] = json_encode(array("ict-example.org:1339" => array("all" => 13)));
 
     $node = determine_node();
-
-    // TODO process stats
+    $db->create_api_call($node);
+    process_stats($node);
     $peers = $db->get_peer_addresses($node);
     return success(array("neighbors" => $peers));
+}
+/**
+ * @throws Exception If invalid $_POST argument.
+ */
+function process_stats($node) {
+    global $db;
+
+    $all_stats = json_decode(get_POST("stats", '/^.*$/'));
+
+    foreach ($all_stats AS $nb_address => $nb_stats) {
+        $nb_stats = json_decode(json_encode($nb_stats), JSON_NUMERIC_CHECK);
+        $nb = $db->find_node_by_address($nb_address);
+        $db->create_stats($node, $nb, $nb_stats);
+    }
 }
 
 // ***** OPERATIONS *****
