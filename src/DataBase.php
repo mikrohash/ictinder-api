@@ -2,6 +2,9 @@
 
 class GeneralDataBase {
 
+    public $timeout_inactive = 600;
+    public $cron_interval_sec = 300;
+    public $report_interval_sec = 180;
     protected $mysqli;
     protected $last_query = "UNDEFINED";
 
@@ -15,7 +18,10 @@ class GeneralDataBase {
 
     // ***** OPERATIONS *****
 
-    protected function query($query) {
+    protected function query($query, $print = false) {
+
+        if($print) echo "<code>$query</code><br/>";
+
         $res = $this->mysqli->query($query);
         if(!$res) {
             $query_escaped = $this->mysqli->escape_string($query);
@@ -129,6 +135,15 @@ class DataBase extends GeneralDataBase{
         return $this->get_row("SELECT total_nbs FROM total_nbs WHERE node = '$node'")['total_nbs'];
     }
 
+    public function update_inactive_nodes() {
+        $max_last_active = time() - 1.2 * $this->report_interval_sec; // these nodes haven't been online for too long
+        $max_timeout = time() + 1.2 * $this->cron_interval_sec; // those entries with a higher timeout will be checked by a later cron-job call
+        $new_timeout = time() + $this->timeout_inactive;
+        $this->query("UPDATE node SET timeout = GREATEST(timeout, FROM_UNIXTIME('$new_timeout')) WHERE id IN "
+            ."(SELECT id FROM (SELECT * FROM node) X LEFT JOIN last_active ON X.id = last_active.node WHERE timeout < FROM_UNIXTIME('$max_timeout') AND (last_active IS NULL OR last_active < FROM_UNIXTIME('$max_last_active')))", true);
+
+        return $this->mysqli->affected_rows;
+    }
     // ***** PEERING *****
 
     public function create_peering($node_a, $node_b) {
@@ -170,16 +185,22 @@ class DataBase extends GeneralDataBase{
     }
 
     public function peer_random() {
-        $peer_seeking_nodes = $this->get_peer_seeking_nodes(7);
-        if(sizeof($peer_seeking_nodes) >= 2)
-            return $this->make_peers($peer_seeking_nodes[0], $peer_seeking_nodes);
+        $peered = 0;
+        do {
+            $peer_seeking_nodes = $this->get_peer_seeking_nodes(7);
+            if(sizeof($peer_seeking_nodes) < 2)
+                break;
+            $new_peers = 2 * $this->make_peers($peer_seeking_nodes[0], $peer_seeking_nodes);
+            $peered += $new_peers;
+        } while ($new_peers > 0);
+        return $peered;
     }
 
     public function make_peers($node, $peer_seeking_nodes = null) {
         $new_peers = $this->find_new_peers($node, $peer_seeking_nodes);
         foreach($new_peers AS $new_peer)
             $this->create_peering($node, $new_peer);
-        return sizeof($new_peers) > 0;
+        return sizeof($new_peers);
     }
 
     protected function find_new_peers($node, $peer_seeking_nodes = null) {
