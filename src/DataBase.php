@@ -53,11 +53,11 @@ class GeneralDataBase {
         return $rows;
     }
 
-    protected function get_attribute_from_rows($query, $attribute) {
+    protected function get_attribute_from_rows($query, $attribute, $is_numberic = false) {
         $rows = $this->get_rows($query);
         $values = array();
         foreach($rows as $row) {
-            array_push($values, $row[$attribute]);
+            array_push($values, $is_numberic ? (int)$row[$attribute] : $row[$attribute]);
         }
         return $values;
     }
@@ -120,6 +120,15 @@ class DataBase extends GeneralDataBase{
 
     }
 
+    public function get_node_timeout($id) {
+        $node = $this->get_row("SELECT UNIX_TIMESTAMP(timeout) AS timeout FROM node WHERE id = '$id'");
+        return $node ? $node['timeout'] : -1;
+    }
+
+    protected function get_total_nbs($node) {
+        return $this->get_row("SELECT total_nbs FROM total_nbs WHERE node = '$node'")['total_nbs'];
+    }
+
     // ***** PEERING *****
 
     public function create_peering($node_a, $node_b) {
@@ -149,34 +158,46 @@ class DataBase extends GeneralDataBase{
     }
 
     public function get_peers($node) {
-        return $this->get_attribute_from_rows("CALL PEERS($node)", "id");
+        return $this->get_attribute_from_rows("CALL PEERS($node)", "id", true);
     }
 
     public function get_unpeered($node) {
-        return $this->get_attribute_from_rows("CALL UNPEERS($node)", "id");
+        return $this->get_attribute_from_rows("CALL UNPEERS($node)", "id", true);
     }
 
-    public function find_new_peers($node) {
+    public function get_peer_seeking_nodes($amount) {
+        return $this->get_attribute_from_rows("SELECT * FROM peer_seeking_nodes ORDER BY RAND() LIMIT $amount", "id", true);
+    }
+
+    public function peer_random() {
+        $peer_seeking_nodes = $this->get_peer_seeking_nodes(7);
+        if(sizeof($peer_seeking_nodes) >= 2)
+            return $this->make_peers($peer_seeking_nodes[0], $peer_seeking_nodes);
+    }
+
+    public function make_peers($node, $peer_seeking_nodes = null) {
+        $new_peers = $this->find_new_peers($node, $peer_seeking_nodes);
+        foreach($new_peers AS $new_peer)
+            $this->create_peering($node, $new_peer);
+        return sizeof($new_peers) > 0;
+    }
+
+    protected function find_new_peers($node, $peer_seeking_nodes = null) {
         $current_peers = $this->get_peers($node);
         $unpeered = $this->get_unpeered($node);
-        $peers_needed = 3-sizeof($current_peers);
+        $peers_needed = 3-$this->get_total_nbs($node);
         $not_interested = $current_peers;
         $not_interested = array_merge($not_interested, $unpeered);
         array_push($not_interested, $node);
-        return $this->get_rows("SELECT * FROM node "
-            ."LEFT JOIN total_nbs ON node.id = total_nbs.node "
-            ."WHERE total_nbs.total_nbs < 3 && id NOT IN(".join(",", $not_interested).") "
-            ."AND IS_NODE_ACTIVE(node.id) AND timeout < CURRENT_TIMESTAMP() "
-            ."ORDER BY RAND() LIMIT $peers_needed");
+
+        if(!$peer_seeking_nodes)
+            $peer_seeking_nodes = $this->get_peer_seeking_nodes($peers_needed + sizeof($not_interested));
+
+        $potential_peers = array_diff($peer_seeking_nodes, $not_interested);
+        return array_slice($potential_peers, 0, $peers_needed);
     }
 
-    function make_peers($node) {
-        $new_peers = $this->find_new_peers($node);
-        foreach($new_peers AS $new_peer)
-            $this->create_peering($node, $new_peer['id']);
-    }
-
-    function peering_insert_middleman($node) {
+    public function peering_insert_middleman($node) {
         if($old = $this->get_row("SELECT id, node1, node2 FROM peering ORDER BY RAND() LIMIT 1")) {
             $this->delete_peering($old['id']);
             $this->create_peering($old['node1'], $node);

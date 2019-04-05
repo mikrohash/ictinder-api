@@ -1,42 +1,46 @@
 
-SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
-SET time_zone = "+00:00";
-
 DELIMITER $$
 --
 -- Procedures
 --
-CREATE DEFINER=`user`@`localhost` PROCEDURE `FIND_NEW_PEERS` (IN `node_id` INT, IN `amount` INT)  NO SQL
-SELECT * FROM node
-                LEFT JOIN total_nbs ON node.id = total_nbs.node
-WHERE total_nbs.total_nbs < 3 && id NOT IN(PEERS(15), UNPEERS(15), node_id)
-  AND IS_NODE_ACTIVE(node.id) AND timeout < CURRENT_TIMESTAMP()
+CREATE DEFINER=`database`@`localhost` PROCEDURE `FIND_NEW_PEERS` (IN `node_id` INT, IN `amount` INT)  NO SQL
+SELECT * FROM total_nbs
+                LEFT JOIN node ON node.id = total_nbs.node
+WHERE total_nbs < 3
+  AND IS_NODE_ACTIVE(id) AND timeout < CURRENT_TIMESTAMP()
 ORDER BY RAND() LIMIT amount$$
 
-CREATE DEFINER=`user`@`localhost` PROCEDURE `PEERS` (IN `node_id` INT)  NO SQL
+CREATE DEFINER=`database`@`localhost` PROCEDURE `PEERS` (IN `node_id` INT)  NO SQL
   DETERMINISTIC
 SELECT node1+node2-node_id AS id FROM peering WHERE node1 = node_id || node2 = node_id$$
 
-CREATE DEFINER=`user`@`localhost` PROCEDURE `UNPEERS` (IN `node_id` INT)  NO SQL
+CREATE DEFINER=`database`@`localhost` PROCEDURE `UNPEERS` (IN `node_id` INT)  NO SQL
   DETERMINISTIC
 SELECT node_issue+node_complaining-node_id AS id FROM unpeering WHERE node_issue = node_id || node_complaining = node_id$$
 
-CREATE DEFINER=`user`@`localhost` PROCEDURE `UPDATE_NODE` (IN `node_id` INT)  NO SQL
+CREATE DEFINER=`database`@`localhost` PROCEDURE `UPDATE_NODE` (IN `node_id` INT)  NO SQL
   DETERMINISTIC
-UPDATE node SET timeout = GREATEST(timeout, CURRENT_TIMESTAMP() + CALC_TIMEOUT(node_id)) WHERE id = node_id$$
+BEGIN
+
+  SET @timeout = CALC_TIMEOUT(node_id);
+
+  UPDATE node SET timeout = GREATEST(timeout, CURRENT_TIMESTAMP() + @timeout) WHERE id = node_id;
+
+
+END$$
 
 --
 -- Functions
 --
-CREATE DEFINER=`user`@`localhost` FUNCTION `CALC_TIMEOUT` (`node_id` INT) RETURNS INT(11) NO SQL
+CREATE DEFINER=`database`@`localhost` FUNCTION `CALC_TIMEOUT` (`node_id` INT) RETURNS INT(11) NO SQL
 RETURN IF(ISSUE_COUNT(node_id)> 5, 7200, IF(IS_NODE_ACTIVE(node_id), 1, 600))$$
 
-CREATE DEFINER=`user`@`localhost` FUNCTION `ISSUE_COUNT` (`node_id` INT) RETURNS INT(11) NO SQL
+CREATE DEFINER=`database`@`localhost` FUNCTION `ISSUE_COUNT` (`node_id` INT) RETURNS INT(11) NO SQL
 RETURN (SELECT issue_count FROM issue_count WHERE node = node_id)$$
 
-CREATE DEFINER=`user`@`localhost` FUNCTION `IS_NODE_ACTIVE` (`node_id` INT) RETURNS TINYINT(1) NO SQL
+CREATE DEFINER=`database`@`localhost` FUNCTION `IS_NODE_ACTIVE` (`node_id` INT) RETURNS TINYINT(4) NO SQL
   DETERMINISTIC
-RETURN (SELECT last_active FROM account WHERE id = (SELECT account FROM node WHERE id = node_id)) > CURRENT_TIMESTAMP() - 200$$
+RETURN (SELECT UNIX_TIMESTAMP(last_active) FROM last_active WHERE node = node_id) > CURRENT_TIMESTAMP() - 200$$
 
 DELIMITER ;
 
@@ -51,9 +55,20 @@ CREATE TABLE `account` (
                          `discord_id` char(20) COLLATE latin1_german1_ci NOT NULL,
                          `pw_bcrypt` char(60) COLLATE latin1_german1_ci NOT NULL,
                          `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                         `last_active` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
                          `slots` int(11) NOT NULL DEFAULT '5'
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `api_call`
+--
+
+CREATE TABLE `api_call` (
+                          `id` int(11) NOT NULL,
+                          `node` int(11) NOT NULL,
+                          `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=MyISAM DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
 
 -- --------------------------------------------------------
 
@@ -71,11 +86,34 @@ CREATE TABLE `avg_stats` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `error`
+--
+
+CREATE TABLE `error` (
+                       `id` int(11) NOT NULL,
+                       `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                       `query` varchar(1000) COLLATE latin1_german1_ci NOT NULL,
+                       `error` varchar(1000) COLLATE latin1_german1_ci NOT NULL
+) ENGINE=MyISAM DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Stand-in structure for view `issue_count`
 --
 CREATE TABLE `issue_count` (
                              `node` int(11)
   ,`issue_count` bigint(21)
+);
+
+-- --------------------------------------------------------
+
+--
+-- Stand-in structure for view `last_active`
+--
+CREATE TABLE `last_active` (
+                             `node` int(11)
+  ,`last_active` timestamp
 );
 
 -- --------------------------------------------------------
@@ -93,6 +131,18 @@ CREATE TABLE `node` (
                       `timeout` timestamp NOT NULL DEFAULT '0000-00-00 00:00:00'
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
 
+--
+-- Triggers `node`
+--
+DELIMITER $$
+CREATE TRIGGER `GO_INTO_TIMEOUT` BEFORE UPDATE ON `node` FOR EACH ROW IF(OLD.timeout <= CURRENT_TIMESTAMP() && NEW.timeout > CURRENT_TIMESTAMP()) THEN
+
+  DELETE FROM peering WHERE node1 = NEW.id || node2 = NEW.id;
+
+END IF
+$$
+DELIMITER ;
+
 -- --------------------------------------------------------
 
 --
@@ -105,6 +155,15 @@ CREATE TABLE `peering` (
                          `node2` int(11) NOT NULL COMMENT 'node2 > node1',
                          `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Stand-in structure for view `peer_seeking_nodes`
+--
+CREATE TABLE `peer_seeking_nodes` (
+  `id` int(11)
+);
 
 -- --------------------------------------------------------
 
@@ -125,18 +184,10 @@ CREATE TABLE `slots_free` (
 CREATE TABLE `stats` (
                        `id` int(11) NOT NULL,
                        `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                       `of_node` int(11) NOT NULL,
-                       `by_node` int(11) NOT NULL,
+                       `of_node` int(11) DEFAULT NULL,
+                       `by_node` int(11) DEFAULT NULL,
                        `txs_all` int(11) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
-
---
--- Triggers `stats`
---
-DELIMITER $$
-CREATE TRIGGER `update account.last_active` AFTER INSERT ON `stats` FOR EACH ROW UPDATE account SET last_active = NEW.created WHERE id = (SELECT account FROM node WHERE id = NEW.by_node)
-$$
-DELIMITER ;
 
 -- --------------------------------------------------------
 
@@ -187,7 +238,7 @@ DELIMITER ;
 --
 DROP TABLE IF EXISTS `avg_stats`;
 
-CREATE ALGORITHM=UNDEFINED DEFINER=`user`@`localhost` SQL SECURITY DEFINER VIEW `avg_stats`  AS  select `peering`.`id` AS `peering`,`stats`.`of_node` AS `of_node`,`stats`.`by_node` AS `by_node`,avg(`stats`.`txs_all`) AS `avg_txs_all`,count(`stats`.`id`) AS `amount` from (`stats` left join `peering` on(((`peering`.`node1` = least(`stats`.`of_node`,`stats`.`by_node`)) and (`peering`.`node2` = greatest(`stats`.`of_node`,`stats`.`by_node`))))) group by `stats`.`of_node`,`stats`.`by_node` ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `avg_stats`  AS  select `peering`.`id` AS `peering`,`stats`.`of_node` AS `of_node`,`stats`.`by_node` AS `by_node`,avg(`stats`.`txs_all`) AS `avg_txs_all`,count(`stats`.`id`) AS `amount` from (`stats` left join `peering` on(((`peering`.`node1` = least(`stats`.`of_node`,`stats`.`by_node`)) and (`peering`.`node2` = greatest(`stats`.`of_node`,`stats`.`by_node`))))) group by `stats`.`of_node`,`stats`.`by_node` ;
 
 -- --------------------------------------------------------
 
@@ -196,7 +247,25 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`user`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `issue_count`;
 
-CREATE ALGORITHM=UNDEFINED DEFINER=`user`@`localhost` SQL SECURITY DEFINER VIEW `issue_count`  AS  select `unpeering`.`node_issue` AS `node`,count(`unpeering`.`id`) AS `issue_count` from `unpeering` where (`unpeering`.`created` > (now() - (3600 * 6))) group by `unpeering`.`node_issue` ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `issue_count`  AS  select `unpeering`.`node_issue` AS `node`,count(`unpeering`.`id`) AS `issue_count` from `unpeering` where (`unpeering`.`created` > (now() - (3600 * 6))) group by `unpeering`.`node_issue` ;
+
+-- --------------------------------------------------------
+
+--
+-- Structure for view `last_active`
+--
+DROP TABLE IF EXISTS `last_active`;
+
+CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `last_active`  AS  select `api_call`.`node` AS `node`,max(`api_call`.`created`) AS `last_active` from `api_call` group by `api_call`.`node` ;
+
+-- --------------------------------------------------------
+
+--
+-- Structure for view `peer_seeking_nodes`
+--
+DROP TABLE IF EXISTS `peer_seeking_nodes`;
+
+CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `peer_seeking_nodes`  AS  select `node`.`id` AS `id` from (`node` left join `total_nbs` on((`node`.`id` = `total_nbs`.`node`))) where ((`total_nbs`.`total_nbs` < 3) and (`node`.`timeout` < now())) ;
 
 -- --------------------------------------------------------
 
@@ -205,7 +274,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`user`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `slots_free`;
 
-CREATE ALGORITHM=UNDEFINED DEFINER=`user`@`localhost` SQL SECURITY DEFINER VIEW `slots_free`  AS  select `N`.`account` AS `account`,(`account`.`slots` - `N`.`used`) AS `free` from (((select count(`node`.`id`) AS `used`,`node`.`account` AS `account` from `node` group by `node`.`account`)) `N` join `account` on((`account`.`id` = `N`.`account`))) ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `slots_free`  AS  select `N`.`account` AS `account`,(`account`.`slots` - `N`.`used`) AS `free` from (((select count(`node`.`id`) AS `used`,`node`.`account` AS `account` from `node` group by `node`.`account`)) `N` join `account` on((`account`.`id` = `N`.`account`))) ;
 
 -- --------------------------------------------------------
 
@@ -214,7 +283,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`user`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `total_nbs`;
 
-CREATE ALGORITHM=UNDEFINED DEFINER=`user`@`localhost` SQL SECURITY DEFINER VIEW `total_nbs`  AS  select `node`.`id` AS `node`,(`node`.`static_nbs` + count(`peering`.`id`)) AS `total_nbs` from (`node` left join `peering` on(((`node`.`id` = `peering`.`node1`) or (`node`.`id` = `peering`.`node2`)))) group by `node`.`id` ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `total_nbs`  AS  select `node`.`id` AS `node`,(`node`.`static_nbs` + count(`peering`.`id`)) AS `total_nbs` from (`node` left join `peering` on(((`node`.`id` = `peering`.`node1`) or (`node`.`id` = `peering`.`node2`)))) group by `node`.`id` ;
 
 --
 -- Indexes for dumped tables
@@ -231,6 +300,20 @@ ALTER TABLE `account`
   ADD KEY `discord_id_4` (`discord_id`);
 
 --
+-- Indexes for table `api_call`
+--
+ALTER TABLE `api_call`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `node` (`node`),
+  ADD KEY `created` (`created`);
+
+--
+-- Indexes for table `error`
+--
+ALTER TABLE `error`
+  ADD PRIMARY KEY (`id`);
+
+--
 -- Indexes for table `node`
 --
 ALTER TABLE `node`
@@ -243,6 +326,7 @@ ALTER TABLE `node`
 --
 ALTER TABLE `peering`
   ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `node1_2` (`node1`,`node2`),
   ADD KEY `node1` (`node1`),
   ADD KEY `node2` (`node2`);
 
@@ -252,13 +336,17 @@ ALTER TABLE `peering`
 ALTER TABLE `stats`
   ADD PRIMARY KEY (`id`),
   ADD KEY `of_node` (`of_node`),
-  ADD KEY `by_node` (`by_node`);
+  ADD KEY `by_node` (`by_node`),
+  ADD KEY `created` (`created`);
 
 --
 -- Indexes for table `unpeering`
 --
 ALTER TABLE `unpeering`
-  ADD PRIMARY KEY (`id`);
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `created` (`created`),
+  ADD KEY `node_complaining` (`node_complaining`),
+  ADD KEY `node_issue` (`node_issue`);
 
 --
 -- AUTO_INCREMENT for dumped tables
@@ -268,22 +356,32 @@ ALTER TABLE `unpeering`
 -- AUTO_INCREMENT for table `account`
 --
 ALTER TABLE `account`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=346;
+--
+-- AUTO_INCREMENT for table `api_call`
+--
+ALTER TABLE `api_call`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=81;
+--
+-- AUTO_INCREMENT for table `error`
+--
+ALTER TABLE `error`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 --
 -- AUTO_INCREMENT for table `node`
 --
 ALTER TABLE `node`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=16;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=216;
 --
 -- AUTO_INCREMENT for table `peering`
 --
 ALTER TABLE `peering`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=28;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=68;
 --
 -- AUTO_INCREMENT for table `stats`
 --
 ALTER TABLE `stats`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=14;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=76;
 --
 -- AUTO_INCREMENT for table `unpeering`
 --
@@ -310,4 +408,5 @@ ALTER TABLE `peering`
 -- Constraints for table `stats`
 --
 ALTER TABLE `stats`
-  ADD CONSTRAINT `stats_ibfk_1` FOREIGN KEY (`of_node`) REFERENCES `node` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION;
+  ADD CONSTRAINT `stats_ibfk_1` FOREIGN KEY (`of_node`) REFERENCES `node` (`id`) ON DELETE SET NULL ON UPDATE NO ACTION,
+  ADD CONSTRAINT `stats_ibfk_2` FOREIGN KEY (`by_node`) REFERENCES `node` (`id`) ON DELETE SET NULL ON UPDATE NO ACTION;

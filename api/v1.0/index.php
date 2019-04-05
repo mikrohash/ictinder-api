@@ -23,10 +23,15 @@ function process_request() {
     $_POST['discord_id'] = "092348283430234";
     $_POST['password'] = "test";
     $_POST['address'] = "ict-example.org:1340";
-    $_POST['stats'] = json_encode(array("ict-example.org:1339" => array("all" => 13)));
+    $_POST['stats'] = json_encode(array("ict-example.org:1340" => array("all" => 13)));
 
     $node = determine_node();
     $db->create_api_call($node);
+
+    $timeout = $db->get_node_timeout($node);
+    if($timeout > time())
+        throw new Exception("Node is on timeout for ".($timeout-time())." more seconds.");
+
     process_stats($node);
     $peers = $db->get_peer_addresses($node);
     return success(array("neighbors" => $peers));
