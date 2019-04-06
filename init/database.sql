@@ -3,13 +3,6 @@ DELIMITER $$
 --
 -- Procedures
 --
-CREATE DEFINER=`database`@`localhost` PROCEDURE `FIND_NEW_PEERS` (IN `node_id` INT, IN `amount` INT)  NO SQL
-SELECT * FROM total_nbs
-                LEFT JOIN node ON node.id = total_nbs.node
-WHERE total_nbs < 3
-  AND IS_NODE_ACTIVE(id) AND timeout < CURRENT_TIMESTAMP()
-ORDER BY RAND() LIMIT amount$$
-
 CREATE DEFINER=`database`@`localhost` PROCEDURE `PEERS` (IN `node_id` INT)  NO SQL
   DETERMINISTIC
 SELECT node1+node2-node_id AS id FROM peering WHERE node1 = node_id || node2 = node_id$$
@@ -18,23 +11,9 @@ CREATE DEFINER=`database`@`localhost` PROCEDURE `UNPEERS` (IN `node_id` INT)  NO
   DETERMINISTIC
 SELECT node_issue+node_complaining-node_id AS id FROM unpeering WHERE node_issue = node_id || node_complaining = node_id$$
 
-CREATE DEFINER=`database`@`localhost` PROCEDURE `UPDATE_NODE` (IN `node_id` INT)  NO SQL
-  DETERMINISTIC
-BEGIN
-
-  SET @timeout = CALC_TIMEOUT(node_id);
-
-  UPDATE node SET timeout = GREATEST(timeout, CURRENT_TIMESTAMP() + @timeout) WHERE id = node_id;
-
-
-END$$
-
 --
 -- Functions
 --
-CREATE DEFINER=`database`@`localhost` FUNCTION `CALC_TIMEOUT` (`node_id` INT) RETURNS INT(11) NO SQL
-RETURN IF(ISSUE_COUNT(node_id)> 5, 7200, IF(IS_NODE_ACTIVE(node_id), 1, 600))$$
-
 CREATE DEFINER=`database`@`localhost` FUNCTION `ISSUE_COUNT` (`node_id` INT) RETURNS INT(11) NO SQL
 RETURN (SELECT issue_count FROM issue_count WHERE node = node_id)$$
 
@@ -68,7 +47,7 @@ CREATE TABLE `api_call` (
                           `id` int(11) NOT NULL,
                           `node` int(11) NOT NULL,
                           `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=MyISAM DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
 
 -- --------------------------------------------------------
 
@@ -81,6 +60,17 @@ CREATE TABLE `avg_stats` (
   ,`by_node` int(11)
   ,`avg_txs_all` decimal(14,4)
   ,`amount` bigint(21)
+);
+
+-- --------------------------------------------------------
+
+--
+-- Stand-in structure for view `bad_peering`
+--
+CREATE TABLE `bad_peering` (
+                             `peering` int(11)
+  ,`node_issue` int(11)
+  ,`node_complaining` int(11)
 );
 
 -- --------------------------------------------------------
@@ -189,6 +179,21 @@ CREATE TABLE `stats` (
                        `txs_all` int(11) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_german1_ci;
 
+--
+-- Triggers `stats`
+--
+DELIMITER $$
+CREATE TRIGGER `unpeer on bad stats` AFTER INSERT ON `stats` FOR EACH ROW BEGIN
+
+  IF (SELECT 1 FROM bad_peering WHERE node_complaining = NEW.by_node AND node_issue = NEW.of_node)
+  THEN
+    INSERT INTO unpeering (node_issue, node_complaining) VALUES(NEW.of_node, NEW.by_node);
+  END IF;
+
+END
+$$
+DELIMITER ;
+
 -- --------------------------------------------------------
 
 --
@@ -216,7 +221,13 @@ CREATE TABLE `unpeering` (
 -- Triggers `unpeering`
 --
 DELIMITER $$
-CREATE TRIGGER `delete peering` AFTER INSERT ON `unpeering` FOR EACH ROW DELETE FROM peering WHERE node1 = LEAST(NEW.node_complaining, NEW.node_issue) && node2 = GREATEST(NEW.node_complaining, NEW.node_issue)
+CREATE TRIGGER `delete peering and update issue node` AFTER INSERT ON `unpeering` FOR EACH ROW BEGIN
+
+  DELETE FROM peering WHERE node1 = LEAST(NEW.node_complaining, NEW.node_issue) && node2 = GREATEST(NEW.node_complaining, NEW.node_issue);
+
+  UPDATE node SET timeout = GREATEST(timeout, CURRENT_TIMESTAMP() + 7200) WHERE id = NEW.node_issue AND ISSUE_COUNT(NEW.node_issue) >= 5;
+
+END
 $$
 DELIMITER ;
 DELIMITER $$
@@ -239,6 +250,15 @@ DELIMITER ;
 DROP TABLE IF EXISTS `avg_stats`;
 
 CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `avg_stats`  AS  select `peering`.`id` AS `peering`,`stats`.`of_node` AS `of_node`,`stats`.`by_node` AS `by_node`,avg(`stats`.`txs_all`) AS `avg_txs_all`,count(`stats`.`id`) AS `amount` from (`stats` left join `peering` on(((`peering`.`node1` = least(`stats`.`of_node`,`stats`.`by_node`)) and (`peering`.`node2` = greatest(`stats`.`of_node`,`stats`.`by_node`))))) group by `stats`.`of_node`,`stats`.`by_node` ;
+
+-- --------------------------------------------------------
+
+--
+-- Structure for view `bad_peering`
+--
+DROP TABLE IF EXISTS `bad_peering`;
+
+CREATE ALGORITHM=UNDEFINED DEFINER=`database`@`localhost` SQL SECURITY DEFINER VIEW `bad_peering`  AS  select `avg_stats`.`peering` AS `peering`,`avg_stats`.`of_node` AS `node_issue`,`avg_stats`.`by_node` AS `node_complaining` from `avg_stats` where ((`avg_stats`.`avg_txs_all` < 20) and (`avg_stats`.`peering` is not null) and (`avg_stats`.`amount` > 5)) ;
 
 -- --------------------------------------------------------
 
@@ -337,7 +357,8 @@ ALTER TABLE `stats`
   ADD PRIMARY KEY (`id`),
   ADD KEY `of_node` (`of_node`),
   ADD KEY `by_node` (`by_node`),
-  ADD KEY `created` (`created`);
+  ADD KEY `created` (`created`),
+  ADD KEY `of_node_2` (`of_node`,`by_node`);
 
 --
 -- Indexes for table `unpeering`
@@ -356,40 +377,46 @@ ALTER TABLE `unpeering`
 -- AUTO_INCREMENT for table `account`
 --
 ALTER TABLE `account`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=346;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 --
 -- AUTO_INCREMENT for table `api_call`
 --
 ALTER TABLE `api_call`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=81;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 --
 -- AUTO_INCREMENT for table `error`
 --
 ALTER TABLE `error`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 --
 -- AUTO_INCREMENT for table `node`
 --
 ALTER TABLE `node`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=216;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 --
 -- AUTO_INCREMENT for table `peering`
 --
 ALTER TABLE `peering`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=68;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 --
 -- AUTO_INCREMENT for table `stats`
 --
 ALTER TABLE `stats`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=76;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 --
 -- AUTO_INCREMENT for table `unpeering`
 --
 ALTER TABLE `unpeering`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 --
 -- Constraints for dumped tables
 --
+
+--
+-- Constraints for table `api_call`
+--
+ALTER TABLE `api_call`
+  ADD CONSTRAINT `api_call_ibfk_1` FOREIGN KEY (`node`) REFERENCES `node` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION;
 
 --
 -- Constraints for table `node`
