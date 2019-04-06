@@ -2,10 +2,12 @@
 
 incl_rel_once("../../src/DataBase.php", __FILE__);
 
-$db = new DataBase();
+cron();
 
-$deactivated_nodes = $db->update_inactive_nodes();
-echo "deactivated $deactivated_nodes inactive nodes<br/>";
-
-$peered = $db->peer_random();
-echo "peered $peered nodes<br/>";
+function cron() {
+    $db = new DataBase();
+    $deactivated_nodes = $db->update_inactive_nodes();
+    echo "deactivated or prolonged timeout of $deactivated_nodes inactive nodes<br/>";
+    $peered = $db->peer_random();
+    echo "peered $peered nodes<br/>";
+}

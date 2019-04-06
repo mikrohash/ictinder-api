@@ -1,16 +1,6 @@
 <?php if(!function_exists("incl_rel_once")) include_once "../../src/include.php";
 
-incl_rel_once("../../src/DataBase.php", __FILE__);
-
-try {
-    $db = new DataBase();
-    $res = process_request();
-} catch(Exception $exception) {
-    $res = error($exception->getMessage());
-}
-
-header('Content-Type: application/json');
-echo $res;
+incl_rel_once("../../src/api.php", __FILE__);
 
 // ***** PROCESSES *****
 
@@ -42,7 +32,7 @@ function process_request() {
 function process_stats($node) {
     global $db;
 
-    $all_stats = json_decode(get_POST("stats", '/^.*$/'));
+    $all_stats = json_decode(get_POST("stats"));
 
     foreach ($all_stats AS $nb_address => $nb_stats) {
         $nb_stats = json_decode(json_encode($nb_stats), JSON_NUMERIC_CHECK);
@@ -59,7 +49,7 @@ function process_stats($node) {
 function determine_node() {
     global $db;
     $account = determine_account();
-    $address = get_POST("address", '/^[a-zA-Z0-9.\-:]*:\d{1,5}$/');
+    $address = get_POST_address();
     $node = $db->find_node_by_address($address);
     if($node == -1)
         $node = register_node($account, $address);
@@ -88,34 +78,11 @@ function register_node($account, $address) {
  */
 function determine_account() {
     global $db;
-    $discord_id = get_POST("discord_id", '/^[0-9]{14,20}$/');
-    $password = get_POST("password", '/^.+$/');
+    $discord_id = get_POST_discord_id();
+    $password = get_POST("password");
 
     $account = $db->authenticate_account($discord_id, $password);
     if($account == -1)
         throw new Exception("Authentication failed.");
     return $account;
-}
-
-// ***** HELPERS *****
-
-/**
- * @throws Exception If POST argument value does not match expected pattern.
- */
-function get_POST($name, $pattern) {
-    $value = $_POST[$name];
-    if(!preg_match($pattern, $value))
-        throw new Exception("POST parameter '$name' does not match pattern '$pattern'.");
-    return $value;
-}
-
-function success($data) {
-    $data['success'] = true;
-    return json_encode($data);
-}
-
-function error($message) {
-    $data['success'] = false;
-    $data['error'] = $message;
-    return json_encode($data);
 }

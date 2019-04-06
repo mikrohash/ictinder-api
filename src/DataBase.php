@@ -43,6 +43,15 @@ class GeneralDataBase {
         }
     }
 
+    protected function find_id_by_key($table, $key_attribute, $key_value) {
+        return $this->find_value_by_key($table, $key_attribute, $key_value, "id", -1);
+    }
+
+    protected function find_value_by_key($table, $key_attribute, $key_value, $value_attribute, $not_found_value) {
+        $row = $this->get_row("SELECT $value_attribute FROM $table WHERE $key_attribute = '$key_value'");
+        return $row ? $row[$value_attribute] : $not_found_value;
+    }
+
     protected function get_rows($query) {
         $rows = array();
         try {
@@ -106,6 +115,10 @@ class DataBase extends GeneralDataBase{
         $this->query("DELETE FROM account WHERE id = '$id'");
     }
 
+    public function find_account_by_discord_id($discord_id) {
+        return $this->find_id_by_key("account", "discord_id", $discord_id);
+    }
+
     // ***** NODES *****
 
     public function create_node($account, $address) {
@@ -117,12 +130,15 @@ class DataBase extends GeneralDataBase{
     }
 
     public function find_node_by_address($address) {
-        $node = $this->get_row("SELECT id FROM node WHERE address = '$address'");
-        return $node ? $node['id'] : -1;
+        return $this->find_id_by_key("node", "address", $address);
+    }
+
+    public function find_nodes_by_account($account, $field = "id") {
+        return $this->get_attribute_from_rows("SELECT $field FROM node WHERE account = '$account'", $field);
     }
 
     public function count_free_slots($account) {
-        return $this->get_row("SELECT free FROM slots_free WHERE account = '$account'")['free'];
+        return $this->find_value_by_key("slots_free", "account", $account, "free", -1);
 
     }
 
@@ -132,7 +148,7 @@ class DataBase extends GeneralDataBase{
     }
 
     protected function get_total_nbs($node) {
-        return $this->get_row("SELECT total_nbs FROM total_nbs WHERE node = '$node'")['total_nbs'];
+        return $this->find_value_by_key("total_nbs", "node", $node, "total_nbs", -1);
     }
 
     public function update_inactive_nodes() {
@@ -140,10 +156,10 @@ class DataBase extends GeneralDataBase{
         $max_timeout = time() + 1.2 * $this->cron_interval_sec; // those entries with a higher timeout will be checked by a later cron-job call
         $new_timeout = time() + $this->timeout_inactive;
         $this->query("UPDATE node SET timeout = GREATEST(timeout, FROM_UNIXTIME('$new_timeout')) WHERE id IN "
-            ."(SELECT id FROM (SELECT * FROM node) X LEFT JOIN last_active ON X.id = last_active.node WHERE timeout < FROM_UNIXTIME('$max_timeout') AND (last_active IS NULL OR last_active < FROM_UNIXTIME('$max_last_active')))", true);
-
+            ."(SELECT id FROM (SELECT * FROM node) X LEFT JOIN last_active ON X.id = last_active.node WHERE timeout < FROM_UNIXTIME('$max_timeout') AND (last_active IS NULL OR last_active < FROM_UNIXTIME('$max_last_active')))");
         return $this->mysqli->affected_rows;
     }
+
     // ***** PEERING *****
 
     public function create_peering($node_a, $node_b) {
